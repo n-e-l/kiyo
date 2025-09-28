@@ -13,13 +13,13 @@ categories = ["rendering::engine"]
 [dependencies]
 ash = { version = "0.38.0", features = ["linked"] }
 gpu-allocator = "0.27.0"
-cen = "0.0.5"
+cen = { git = "https://github.com/n-e-l/cen.git", rev = "2670e288e83fab0d10669b909259be2443f9e6e3" }
 cpal = "0.13.4"
 glam = "0.28.0"
 log = "0.4.22"
 bytemuck = { version = "1.17.0", features = ["derive"] }
 rodio = "0.20.1"
-egui = "0.30.0"
+egui = "0.32.0"
 png = "0.17.16"
 
 [dev-dependencies]

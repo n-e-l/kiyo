@@ -2,10 +2,10 @@
 name = "kiyo"
 version = "0.0.6"
 edition = "2021"
-authors = ["Angelo Carly <angelo.carly@protonmail.com"]
+authors = ["Lauda Carly <lauda@nel.re"]
 description = "Lightweight compute shader playground"
 readme = "README.md"
-repository = "https://github.com/angelocarly/kiyo"
+repository = "https://github.com/n-e-l/kiyo"
 license = "GPL-3.0-only"
 keywords = ["compute", "vulkan", "render", "engine", "art"]
 categories = ["rendering::engine"]

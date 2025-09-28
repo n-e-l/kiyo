@@ -5,8 +5,8 @@ use ash::vk::{BufferImageCopy, BufferUsageFlags, DeviceSize, Extent3D, ImageAspe
 use bytemuck::{Pod, Zeroable};
 use cen::graphics::pipeline_store::{PipelineConfig, PipelineKey};
 use cen::graphics::Renderer;
-use cen::graphics::renderer::RenderComponent;
-use cen::vulkan::{Buffer, CommandBuffer, DescriptorSetLayout, Image, PipelineErr};
+use cen::graphics::renderer::{RenderComponent, RenderContext};
+use cen::vulkan::{Allocator, Buffer, CommandBuffer, DescriptorSetLayout, Device, Image, PipelineErr};
 use glam::{UVec3};
 use log::{error, info};
 use crate::app::audio_orch::{AudioConfig};
@@ -18,7 +18,7 @@ use core::time::{Duration};
 use std::ops::Add;
 use std::process::exit;
 use std::thread;
-use cen::app::gui::GuiComponent;
+use cen::app::gui::{GuiComponent, GuiSystem};
 use egui::{menu, Context, TopBottomPanel};
 use egui::epaint::ColorMode::UV;
 use gpu_allocator::MemoryLocation;
@@ -94,7 +94,8 @@ pub struct DrawOrchestrator {
     pub image_resources: Option<Vec<ImageResource>>,
     pub passes: Option<Vec<ShaderPass>>,
     image_export: ImgExport,
-    workgroup_size: u32
+    workgroup_size: u32,
+    start_time: std::time::Instant,
 }
 
 impl DrawOrchestrator {
@@ -114,66 +115,61 @@ impl DrawOrchestrator {
                 width: 1920,
                 height: 1080,
             },
+            start_time: std::time::Instant::now(),
         }
     }
 
-    fn export(&mut self, renderer: &mut Renderer, width: u32, height: u32) {
+    fn export(&mut self, ctx: &mut RenderContext, width: u32, height: u32) {
 
         info!("Exporting...");
         let output_image = Image::new(
-            &renderer.device,
-            &mut renderer.allocator,
+            &ctx.device,
+            &mut ctx.allocator,
             width,
             height,
             ImageUsageFlags::STORAGE | ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::TRANSFER_SRC
         );
         let mut buffer = Buffer::new(
-            &renderer.device,
-            &mut renderer.allocator,
+            &ctx.device,
+            &mut ctx.allocator,
             MemoryLocation::GpuToCpu,
             (size_of::<u8>() as u32 * 4 * width * height) as DeviceSize,
             BufferUsageFlags::STORAGE_BUFFER | BufferUsageFlags::TRANSFER_DST
         );
-        let image_resources = Self::create_image_resources(renderer, &self.draw_config, width, height);
+        let image_resources = Self::create_image_resources(ctx.device, ctx.allocator, &self.draw_config, width, height);
 
-        let mut command_buffer = renderer.create_command_buffer();
-        command_buffer.begin();
-        {
-            self.do_render(renderer, &mut command_buffer, &image_resources, &output_image.handle(), ImageLayout::UNDEFINED, ImageLayout::TRANSFER_SRC_OPTIMAL);
+        self.do_render(ctx, &image_resources, &output_image, ImageLayout::UNDEFINED, ImageLayout::TRANSFER_SRC_OPTIMAL);
 
-            command_buffer.copy_image_to_buffer(
-                &output_image,
-                ImageLayout::TRANSFER_SRC_OPTIMAL,
-                &buffer,
-                &[
-                    BufferImageCopy::default()
-                        .buffer_image_height(output_image.height)
-                        .buffer_offset(0)
-                        .image_extent(Extent3D::default().width(output_image.width).height(output_image.height).depth(1))
-                        .image_offset(Offset3D::default())
-                        .image_subresource(ImageSubresourceLayers::default()
-                            .layer_count(1)
-                            .mip_level(0)
-                            .aspect_mask(ImageAspectFlags::COLOR)
-                            .base_array_layer(0)
-                        )
-                ]
-            );
-        }
-        command_buffer.end();
+        ctx.command_buffer.copy_image_to_buffer(
+            &output_image,
+            ImageLayout::TRANSFER_SRC_OPTIMAL,
+            &buffer,
+            &[
+                BufferImageCopy::default()
+                    .buffer_image_height(output_image.height())
+                    .buffer_offset(0)
+                    .image_extent(Extent3D::default().width(output_image.width()).height(output_image.height()).depth(1))
+                    .image_offset(Offset3D::default())
+                    .image_subresource(ImageSubresourceLayers::default()
+                        .layer_count(1)
+                        .mip_level(0)
+                        .aspect_mask(ImageAspectFlags::COLOR)
+                        .base_array_layer(0)
+                    )
+            ]
+        );
 
         let filename = self.image_export.filename.clone();
-        renderer.submit_single_time_command_buffer(command_buffer, Box::new(move || {
-            // TODO: This is to keep the image alive until submission, but that should happen automagically
+        ctx.run_on_finish(Box::new(move || {
             let image = output_image;
             image.handle();
             let _image_resources = image_resources;
 
             // Write png
             thread::spawn(move || {
-                let memory = buffer.mapped();
+                let memory = buffer.mapped().unwrap();
                 let output_file = filename.clone().add(".png");
-                write_png_image(memory, width, height, output_file.as_str());
+                write_png_image(memory.as_slice(), width, height, output_file.as_str());
                 info!("Finished exporting png image to {}", output_file);
             });
         }));
@@ -182,15 +178,14 @@ impl DrawOrchestrator {
     /*
      * Perform a compute writing to @target_image
      */
-    fn do_render(&self, renderer: &mut Renderer, command_buffer: &mut CommandBuffer, image_resources: &Vec<ImageResource>, target_image: &vk::Image, src_layout: ImageLayout, dst_layout: ImageLayout) {
+    fn do_render(&self, ctx: &mut RenderContext, image_resources: &Vec<ImageResource>, target_image: &Image, src_layout: ImageLayout, dst_layout: ImageLayout) {
 
         // Clear all images with a clear config
         {
             for i in image_resources {
-                renderer.transition_image(
-                    &command_buffer,
-                    &i.image.handle(),
-                    vk::ImageLayout::GENERAL,
+                ctx.command_buffer.image_barrier(
+                    &i.image,
+                    vk::ImageLayout::UNDEFINED,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     vk::PipelineStageFlags::TOP_OF_PIPE,
                     vk::PipelineStageFlags::TRANSFER,
@@ -201,30 +196,16 @@ impl DrawOrchestrator {
                 match &i.clear {
                     ClearConfig::None => {},
                     ClearConfig::Color(r, g, b) => {
-                        unsafe {
-                            renderer.device.handle()
-                                .cmd_clear_color_image(
-                                    command_buffer.handle(),
-                                    *i.image.handle(),
-                                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                    &vk::ClearColorValue {
-                                        float32: [*r, *g, *b, 1f32]
-                                    },
-                                    &[vk::ImageSubresourceRange {
-                                        aspect_mask: ImageAspectFlags::COLOR,
-                                        base_mip_level: 0,
-                                        level_count: 1,
-                                        base_array_layer: 0,
-                                        layer_count: 1,
-                                    }]
-                                );
-                        }
+                        ctx.command_buffer.clear_color_image(
+                            &i.image,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            [*r, *g, *b, 1f32]
+                        );
                     }
                 }
 
-                renderer.transition_image(
-                    &command_buffer,
-                    &i.image.handle(),
+                ctx.command_buffer.image_barrier(
+                    &i.image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     vk::ImageLayout::GENERAL,
                     vk::PipelineStageFlags::TRANSFER,
@@ -236,17 +217,17 @@ impl DrawOrchestrator {
         }
 
         // Compute images
-        let current_time = renderer.start_time.elapsed().as_secs_f32();
+        let current_time = self.start_time.elapsed().as_secs_f32();
         for p in self.passes.as_ref().unwrap() {
-            if let Some(pipeline) = renderer.pipeline_store().get(p.pipeline_handle) {
-                command_buffer.bind_pipeline(&pipeline);
+            if let Some(pipeline) = ctx.pipeline_store.get(p.pipeline_handle) {
+                ctx.command_buffer.bind_pipeline(&pipeline);
                 let push_constants = PushConstants {
                     time: current_time,
                     in_image: p.in_images.first().map(|&x| x as i32).unwrap_or(-1),
                     out_image: p.out_images.first().map(|&x| x as i32).unwrap_or(-1),
                 };
-                command_buffer.push_constants(&pipeline, vk::ShaderStageFlags::COMPUTE, 0, &bytemuck::cast_slice(std::slice::from_ref(&push_constants)));
-                command_buffer.bind_push_descriptor_images(
+                ctx.command_buffer.push_constants(&pipeline, vk::ShaderStageFlags::COMPUTE, 0, &bytemuck::cast_slice(std::slice::from_ref(&push_constants)));
+                ctx.command_buffer.bind_push_descriptor_images(
                     &pipeline,
                     &image_resources.iter().map(|r| {
                         &r.image
@@ -255,17 +236,17 @@ impl DrawOrchestrator {
 
                 match p.dispatches {
                     DispatchConfig::FullScreen => {
-                        let width = image_resources.first().unwrap().image.width;
-                        let height = image_resources.first().unwrap().image.width;
+                        let width = image_resources.first().unwrap().image.width();
+                        let height = image_resources.first().unwrap().image.width();
                         let dispatches = UVec3::new(
                             (width as f32 / self.workgroup_size as f32).ceil() as u32,
                             (height as f32 / self.workgroup_size as f32).ceil() as u32,
                             1
                         );
-                        command_buffer.dispatch(dispatches.x, dispatches.y, dispatches.z);
+                        ctx.command_buffer.dispatch(dispatches.x, dispatches.y, dispatches.z);
                     },
                     DispatchConfig::Count(x, y, z) => {
-                        command_buffer.dispatch(x, y, z);
+                        ctx.command_buffer.dispatch(x, y, z);
                     }
                 }
             }
@@ -275,7 +256,7 @@ impl DrawOrchestrator {
 
         self.sink.as_ref().map(|sink| {
             let seekhead = sink.get_pos();
-            let render_time = renderer.start_time.elapsed();
+            let render_time = self.start_time.elapsed();
 
             if seekhead.abs_diff(render_time) > Duration::from_secs_f32(0.05) {
                 _ = Sink::try_seek(sink, render_time);
@@ -286,9 +267,8 @@ impl DrawOrchestrator {
         {
             let output_image = &image_resources.last().expect("No images found to output").image;
 
-            renderer.transition_image(
-                &command_buffer,
-                &output_image.handle(),
+            ctx.command_buffer.image_barrier(
+                &output_image,
                 vk::ImageLayout::GENERAL,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::PipelineStageFlags::TRANSFER,
@@ -298,9 +278,8 @@ impl DrawOrchestrator {
             );
 
             // Transition the target image
-            renderer.transition_image(
-                &command_buffer,
-                &target_image,
+            ctx.command_buffer.image_barrier(
+                target_image,
                 src_layout,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::PipelineStageFlags::TOP_OF_PIPE,
@@ -309,61 +288,48 @@ impl DrawOrchestrator {
                 vk::AccessFlags::TRANSFER_WRITE
             );
 
-            unsafe {
-                renderer.device.handle().cmd_clear_color_image(
-                    command_buffer.handle(),
-                    *target_image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &vk::ClearColorValue {
-                        float32: [0.0, 0.0, 0.0, 1.0]
-                    },
-                    &[vk::ImageSubresourceRange {
-                        aspect_mask: ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    }]
-                );
+            ctx.command_buffer.clear_color_image(
+                target_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                [0.0, 0.0, 0.0, 1.0]
+            );
 
-                // Use a blit, as a copy doesn't synchronize properly to the targetimage on MoltenVK
-                renderer.device.handle().cmd_blit_image(
-                    command_buffer.handle(),
-                    *output_image.handle(),
-                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                    *target_image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[vk::ImageBlit::default()
-                        .src_offsets([
-                            Offset3D::default(),
-                            Offset3D::default().x(output_image.width as i32).y(output_image.height as i32).z(1)
-                        ])
-                        .dst_offsets([
-                            Offset3D::default(),
-                            Offset3D::default().x(output_image.width as i32).y(output_image.height as i32).z(1)
-                        ])
-                        .src_subresource(
-                            ImageSubresourceLayers::default()
-                                .aspect_mask(ImageAspectFlags::COLOR)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .mip_level(0)
-                        )
-                        .dst_subresource(
-                            ImageSubresourceLayers::default()
-                                .aspect_mask(ImageAspectFlags::COLOR)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .mip_level(0)
-                        )
-                    ],
-                    vk::Filter::NEAREST,
-                );
-            }
+            // Use a blit, as a copy doesn't synchronize properly to the targetimage on MoltenVK
+
+            ctx.command_buffer.blit_image(
+                output_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                target_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[vk::ImageBlit::default()
+                    .src_offsets([
+                        Offset3D::default(),
+                        Offset3D::default().x(output_image.width() as i32).y(output_image.height() as i32).z(1)
+                    ])
+                    .dst_offsets([
+                        Offset3D::default(),
+                        Offset3D::default().x(output_image.width() as i32).y(output_image.height() as i32).z(1)
+                    ])
+                    .src_subresource(
+                        ImageSubresourceLayers::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .base_array_layer(0)
+                            .layer_count(1)
+                            .mip_level(0)
+                    )
+                    .dst_subresource(
+                        ImageSubresourceLayers::default()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .base_array_layer(0)
+                            .layer_count(1)
+                            .mip_level(0)
+                    )
+                ],
+                vk::Filter::NEAREST,
+            );
 
             // Transfer back to default states
-            renderer.transition_image(
-                &command_buffer,
+            ctx.command_buffer.image_barrier(
                 &target_image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 dst_layout,
@@ -373,9 +339,8 @@ impl DrawOrchestrator {
                 vk::AccessFlags::NONE
             );
 
-            renderer.transition_image(
-                &command_buffer,
-                output_image.handle(),
+            ctx.command_buffer.image_barrier(
+                output_image,
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::ImageLayout::GENERAL,
                 vk::PipelineStageFlags::TRANSFER,
@@ -386,11 +351,11 @@ impl DrawOrchestrator {
         }
     }
 
-    fn create_image_resources(renderer: &mut Renderer, draw_config: &DrawConfig, width: u32, height: u32) -> Vec<ImageResource> {
+    fn create_image_resources(device: &Device, allocator: &mut Allocator, draw_config: &DrawConfig, width: u32, height: u32) -> Vec<ImageResource> {
         let image_resources = draw_config.images.iter().map(|c| {
             let image = Image::new(
-                &renderer.device,
-                &mut renderer.allocator,
+                device,
+                allocator,
                 width,
                 height,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST
@@ -402,23 +367,15 @@ impl DrawOrchestrator {
             }
         }).collect::<Vec<ImageResource>>();
 
-        // Transition images
-        let mut image_command_buffer = CommandBuffer::new(&renderer.device, &renderer.command_pool);
-        image_command_buffer.begin();
-        {
-            for image_resource in &image_resources {
-                renderer.transition_image(&image_command_buffer, &image_resource.image.handle(), vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::AccessFlags::empty(), vk::AccessFlags::empty());
-            }
-        }
-        image_command_buffer.end();
-        renderer.submit_single_time_command_buffer(image_command_buffer, Box::new(|| {}));
-
         image_resources
     }
 }
 
 impl GuiComponent for DrawOrchestrator {
-    fn gui(&mut self, context: &Context) {
+    fn initialize_gui(&mut self, gui: &mut GuiSystem) {
+    }
+
+    fn gui(&mut self, gui: &GuiSystem, context: &Context) {
         TopBottomPanel::top("top").show(context, |ui| {
             menu::bar(ui, |ui| {
                 ui.menu_button("Export..", |ui| {
@@ -469,7 +426,7 @@ impl RenderComponent for DrawOrchestrator {
         );
 
         // Images
-        let image_resources = Self::create_image_resources(renderer, &self.draw_config, renderer.swapchain.get_extent().width, renderer.swapchain.get_extent().height);
+        let image_resources = Self::create_image_resources(&renderer.device, &mut renderer.allocator, &self.draw_config, renderer.swapchain.get_extent().width, renderer.swapchain.get_extent().height);
 
         let push_constant_ranges = Vec::from([
             vk::PushConstantRange::default()
@@ -529,13 +486,22 @@ impl RenderComponent for DrawOrchestrator {
         };
     }
 
-    fn render(&mut self, renderer: &mut Renderer, command_buffer: &mut CommandBuffer, swapchain_image: &vk::Image, _view: &vk::ImageView) {
+    fn render(&mut self, ctx: &mut RenderContext) {
 
         if self.image_export.do_export {
-            self.export(renderer, self.image_export.width, self.image_export.height);
+            self.export(ctx, self.image_export.width, self.image_export.height);
             self.image_export.do_export = false;
         }
 
-        self.do_render(renderer, command_buffer, self.image_resources.as_ref().unwrap(), swapchain_image, ImageLayout::PRESENT_SRC_KHR, ImageLayout::PRESENT_SRC_KHR);
+        // Recreate resources if needed
+        let width = self.image_resources.as_ref().unwrap().first().unwrap().image.width();
+        let height = self.image_resources.as_ref().unwrap().first().unwrap().image.height();
+        if width != ctx.swapchain_image.width() || height != ctx.swapchain_image.height() {
+            self.image_resources = Some(Self::create_image_resources(ctx.device, ctx.allocator, &self.draw_config, ctx.swapchain_image.width(), ctx.swapchain_image.height()));
+        }
+
+        if let Some(image_resources) = self.image_resources.as_ref() {
+            self.do_render(ctx, image_resources, ctx.swapchain_image, ImageLayout::PRESENT_SRC_KHR, ImageLayout::PRESENT_SRC_KHR);
+        }
     }
 }

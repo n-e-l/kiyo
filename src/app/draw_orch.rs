@@ -161,10 +161,6 @@ impl DrawOrchestrator {
 
         let filename = self.image_export.filename.clone();
         ctx.run_on_finish(Box::new(move || {
-            let image = output_image;
-            image.handle();
-            let _image_resources = image_resources;
-
             // Write png
             thread::spawn(move || {
                 let memory = buffer.mapped().unwrap();

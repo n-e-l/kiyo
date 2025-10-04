@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use cen::app::component::{Component, ComponentRegistry};
 use crate::app::StreamFactory;
 use crate::app::draw_orch::{DrawConfig};
 use crate::app::audio_orch::{AudioConfig};
@@ -74,8 +75,10 @@ impl App {
             p.play();
         }
 
-        // Run graphics backend
         let orch = Arc::new(Mutex::new(orchestrator));
-        cen::app::App::run(cen_conf, orch.clone(), Some(orch));
+        let registry = ComponentRegistry::new()
+            .register(Component::Render(orch.clone()))
+            .register(Component::Gui(orch.clone()));
+        cen::app::App::run(cen_conf, registry);
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::mem::size_of;
-use ash::vk;
-use ash::vk::{BufferImageCopy, BufferUsageFlags, DeviceSize, Extent3D, ImageAspectFlags, ImageLayout, ImageSubresourceLayers, ImageUsageFlags, Offset3D};
+use cen::ash::vk;
+use cen::ash::vk::{BufferImageCopy, BufferUsageFlags, DeviceSize, Extent3D, ImageAspectFlags, ImageLayout, ImageSubresourceLayers, ImageUsageFlags, Offset3D};
 use bytemuck::{Pod, Zeroable};
 use cen::graphics::pipeline_store::{PipelineConfig, PipelineKey};
 use cen::graphics::Renderer;
@@ -19,9 +19,9 @@ use std::ops::Add;
 use std::process::exit;
 use std::thread;
 use cen::app::gui::{GuiComponent, GuiSystem};
-use egui::{menu, Context, TopBottomPanel};
-use egui::epaint::ColorMode::UV;
-use gpu_allocator::MemoryLocation;
+use cen::egui::{menu, Context, TopBottomPanel};
+use cen::egui::epaint::ColorMode::UV;
+use cen::gpu_allocator::MemoryLocation;
 use crate::app::png::{write_png_image};
 
 #[derive(Copy)]
@@ -380,10 +380,10 @@ impl GuiComponent for DrawOrchestrator {
                     // ui.label("Height");
                     // ui.add(egui::TextEdit::singleline(&mut self.image_export.height_text));
                     ui.label("Filename");
-                    ui.add(egui::TextEdit::singleline(&mut self.image_export.filename));
+                    ui.add(cen::egui::TextEdit::singleline(&mut self.image_export.filename));
                     ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut self.image_export.width));
-                        ui.add(egui::DragValue::new(&mut self.image_export.height));
+                        ui.add(cen::egui::DragValue::new(&mut self.image_export.width));
+                        ui.add(cen::egui::DragValue::new(&mut self.image_export.height));
                     });
                     if ui.button("Save").clicked() {
                         self.image_export.do_export = true;

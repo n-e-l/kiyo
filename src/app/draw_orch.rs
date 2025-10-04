@@ -18,6 +18,7 @@ use core::time::{Duration};
 use std::ops::Add;
 use std::process::exit;
 use std::thread;
+use cen::app::engine::InitContext;
 use cen::app::gui::{GuiComponent, GuiSystem};
 use cen::egui::{menu, Context, TopBottomPanel};
 use cen::egui::epaint::ColorMode::UV;
@@ -90,25 +91,107 @@ pub struct DrawOrchestrator {
     audio_config: AudioConfig,
     audio_stream: Option<OutputStream>,
     sink: Option<Sink>,
-    pub compute_descriptor_set_layout: Option<DescriptorSetLayout>,
-    pub image_resources: Option<Vec<ImageResource>>,
-    pub passes: Option<Vec<ShaderPass>>,
+    pub compute_descriptor_set_layout: DescriptorSetLayout,
+    pub image_resources: Vec<ImageResource>,
+    pub passes: Vec<ShaderPass>,
     image_export: ImgExport,
     workgroup_size: u32,
     start_time: std::time::Instant,
 }
 
 impl DrawOrchestrator {
-    pub fn new(draw_config: DrawConfig, audio_config: AudioConfig) -> DrawOrchestrator {
+    pub fn new(ctx: &mut InitContext, draw_config: DrawConfig, audio_config: AudioConfig) -> DrawOrchestrator {
+
+        let image_count = draw_config.images.len() as u32;
+
+        // Verify max referred index
+        let max_reffered_image = draw_config.passes.iter()
+            .map(|p| p.output_resources.iter())
+            .flatten().max().unwrap_or(&0);
+        if *max_reffered_image as i32 > image_count as i32 - 1 {
+            error!("Image index out of bounds, provide enough image resources");
+            panic!("Image index out of bounds, provide enough image resources");
+        }
+
+        // Layout
+        let layout_bindings = &[
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(image_count)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::FRAGMENT)
+        ];
+        let compute_descriptor_set_layout = DescriptorSetLayout::new_push_descriptor(
+            &ctx.device,
+            layout_bindings
+        );
+
+        // Images
+        let image_resources = Self::create_image_resources(&ctx.device, &mut ctx.allocator, &draw_config, ctx.swapchain_extent.width, ctx.swapchain_extent.height);
+
+        let push_constant_ranges = Vec::from([
+            vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .offset(0)
+                .size(size_of::<PushConstants>() as u32),
+        ]);
+
+        let workgroup_size = 32;
+        let mut macros: HashMap<String, String> = HashMap::new();
+        macros.insert("NUM_IMAGES".to_string(), image_count.to_string());
+        macros.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        // Passes
+        let passes = draw_config.passes
+            .iter()
+            .map(|c| {
+                let pipeline_handle = ctx.pipeline_store.insert(
+                    PipelineConfig {
+                        shader_path: c.shader.clone().into(),
+                        descriptor_set_layouts: vec![compute_descriptor_set_layout.clone()],
+                        push_constant_ranges: push_constant_ranges.clone(),
+                        macros: macros.clone()
+                    }
+                )?;
+
+                Ok(ShaderPass {
+                    pipeline_handle,
+                    dispatches: c.dispatches,
+                    in_images: c.input_resources.clone(),
+                    out_images: c.output_resources.clone(),
+                })
+            })
+            .collect::<Result<Vec<ShaderPass>, PipelineErr>>()
+            .inspect_err(|err| {
+                error!("{}", err);
+                exit(0);
+            })
+            .unwrap();
+
+        // Audio things
+        let mut audio_stream = None;
+        let mut sink = None;
+        if let AudioFile(file) = audio_config.clone() {
+            let (stream, stream_handle) = OutputStream::try_default().unwrap();
+            audio_stream = Some(stream);
+            sink = Some(Sink::try_new(&stream_handle).unwrap());
+            // Load a sound from a file, using a path relative to Cargo.toml
+            let file = BufReader::new(File::open(file).unwrap());
+            // Decode that sound file into a source
+            let source = Decoder::new(file).unwrap();
+
+            sink.as_ref().map(|sink| Sink::append(sink, source));
+            sink.as_ref().map(|sink| Sink::play(sink));
+        };
         Self {
             workgroup_size: 32,
             draw_config,
             audio_config,
-            audio_stream: None,
-            sink: None,
-            compute_descriptor_set_layout: None,
-            image_resources: None,
-            passes: None,
+            audio_stream,
+            sink,
+            compute_descriptor_set_layout,
+            image_resources,
+            passes,
             image_export: ImgExport {
                 do_export: false,
                 filename: "output".to_string(),
@@ -214,7 +297,7 @@ impl DrawOrchestrator {
 
         // Compute images
         let current_time = self.start_time.elapsed().as_secs_f32();
-        for p in self.passes.as_ref().unwrap() {
+        for p in &self.passes {
             if let Some(pipeline) = ctx.pipeline_store.get(p.pipeline_handle) {
                 ctx.command_buffer.bind_pipeline(&pipeline);
                 let push_constants = PushConstants {
@@ -368,10 +451,7 @@ impl DrawOrchestrator {
 }
 
 impl GuiComponent for DrawOrchestrator {
-    fn initialize_gui(&mut self, gui: &mut GuiSystem) {
-    }
-
-    fn gui(&mut self, gui: &GuiSystem, context: &Context) {
+    fn gui(&mut self, _: &GuiSystem, context: &Context) {
         TopBottomPanel::top("top").show(context, |ui| {
             menu::bar(ui, |ui| {
                 ui.menu_button("Export..", |ui| {
@@ -395,93 +475,6 @@ impl GuiComponent for DrawOrchestrator {
 }
 
 impl RenderComponent for DrawOrchestrator {
-    fn initialize(&mut self, renderer: &mut Renderer)
-    {
-        let image_count = self.draw_config.images.len() as u32;
-
-        // Verify max referred index
-        let max_reffered_image = self.draw_config.passes.iter()
-            .map(|p| p.output_resources.iter())
-            .flatten().max().unwrap_or(&0);
-        if *max_reffered_image as i32 > image_count as i32 - 1 {
-            error!("Image index out of bounds, provide enough image resources");
-            panic!("Image index out of bounds, provide enough image resources");
-        }
-
-        // Layout
-        let layout_bindings = &[
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(image_count)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::FRAGMENT)
-        ];
-        let compute_descriptor_set_layout = DescriptorSetLayout::new_push_descriptor(
-            &renderer.device,
-            layout_bindings
-        );
-
-        // Images
-        let image_resources = Self::create_image_resources(&renderer.device, &mut renderer.allocator, &self.draw_config, renderer.swapchain.get_extent().width, renderer.swapchain.get_extent().height);
-
-        let push_constant_ranges = Vec::from([
-            vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                .offset(0)
-                .size(size_of::<PushConstants>() as u32),
-        ]);
-
-        self.workgroup_size = 32;
-        let mut macros: HashMap<String, String> = HashMap::new();
-        macros.insert("NUM_IMAGES".to_string(), image_count.to_string());
-        macros.insert("WORKGROUP_SIZE".to_string(), self.workgroup_size.to_string());
-
-        // Passes
-        let passes = self.draw_config.passes
-            .iter()
-            .map(|c| {
-                let pipeline_handle = renderer.pipeline_store().insert(
-                    PipelineConfig {
-                        shader_path: c.shader.clone().into(),
-                        descriptor_set_layouts: vec![compute_descriptor_set_layout.clone()],
-                        push_constant_ranges: push_constant_ranges.clone(),
-                        macros: macros.clone()
-                    }
-                )?;
-
-                Ok(ShaderPass {
-                    pipeline_handle,
-                    dispatches: c.dispatches,
-                    in_images: c.input_resources.clone(),
-                    out_images: c.output_resources.clone(),
-                })
-            })
-            .collect::<Result<Vec<ShaderPass>, PipelineErr>>()
-            .inspect_err(|err| {
-                error!("{}", err);
-                exit(0);
-            })
-            .unwrap();
-
-        self.compute_descriptor_set_layout = Some(compute_descriptor_set_layout);
-        self.image_resources = Some(image_resources);
-        self.passes = Some(passes);
-
-        // Audio things
-        if let AudioFile(file) = self.audio_config.clone() {
-            let (stream, stream_handle) = OutputStream::try_default().unwrap();
-            self.audio_stream = Some(stream);
-            self.sink = Some(Sink::try_new(&stream_handle).unwrap());
-            // Load a sound from a file, using a path relative to Cargo.toml
-            let file = BufReader::new(File::open(file).unwrap());
-            // Decode that sound file into a source
-            let source = Decoder::new(file).unwrap();
-
-            self.sink.as_ref().map(|sink| Sink::append(sink, source));
-            self.sink.as_ref().map(|sink| Sink::play(sink));
-        };
-    }
-
     fn render(&mut self, ctx: &mut RenderContext) {
 
         if self.image_export.do_export {
@@ -490,14 +483,12 @@ impl RenderComponent for DrawOrchestrator {
         }
 
         // Recreate resources if needed
-        let width = self.image_resources.as_ref().unwrap().first().unwrap().image.width();
-        let height = self.image_resources.as_ref().unwrap().first().unwrap().image.height();
+        let width = self.image_resources.first().unwrap().image.width();
+        let height = self.image_resources.first().unwrap().image.height();
         if width != ctx.swapchain_image.width() || height != ctx.swapchain_image.height() {
-            self.image_resources = Some(Self::create_image_resources(ctx.device, ctx.allocator, &self.draw_config, ctx.swapchain_image.width(), ctx.swapchain_image.height()));
+            self.image_resources = Self::create_image_resources(ctx.device, ctx.allocator, &self.draw_config, ctx.swapchain_image.width(), ctx.swapchain_image.height());
         }
 
-        if let Some(image_resources) = self.image_resources.as_ref() {
-            self.do_render(ctx, image_resources, ctx.swapchain_image, ImageLayout::PRESENT_SRC_KHR, ImageLayout::PRESENT_SRC_KHR);
-        }
+        self.do_render(ctx, &self.image_resources, ctx.swapchain_image, ImageLayout::PRESENT_SRC_KHR, ImageLayout::PRESENT_SRC_KHR);
     }
 }

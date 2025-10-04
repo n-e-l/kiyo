@@ -9,7 +9,7 @@ use cpal::traits::StreamTrait;
 use crate::app::{DrawOrchestrator};
 
 pub struct App {
-    pub cen: cen::app::App,
+    pub cen: cen::app::Cen,
 }
 
 struct AudioPlayer {
@@ -62,23 +62,25 @@ impl App {
             .fullscreen(app_config.fullscreen)
             .log_fps(app_config.log_fps);
 
-        // Parse orchestrator
-        let orchestrator = DrawOrchestrator::new(draw_config, audio_config.clone());
+        cen::app::Cen::run(cen_conf, Box::new(move |ctx| {
 
-        // audio program (not synced to render time like audio file?)
-        let player:Option<AudioPlayer> = match audio_config {
-            Program(program) => Some(AudioPlayer::new(program)),
-            AudioFile(_) => Option::None,
-            None => Option::None
-        };
-        if let Some(p) = &player {
-            p.play();
-        }
+            // Parse orchestrator
+            let orchestrator = DrawOrchestrator::new(ctx, draw_config, audio_config.clone());
 
-        let orch = Arc::new(Mutex::new(orchestrator));
-        let registry = ComponentRegistry::new()
-            .register(Component::Render(orch.clone()))
-            .register(Component::Gui(orch.clone()));
-        cen::app::App::run(cen_conf, registry);
+            // audio program (not synced to render time like audio file?)
+            let player:Option<AudioPlayer> = match audio_config {
+                Program(program) => Some(AudioPlayer::new(program)),
+                AudioFile(_) => Option::None,
+                None => Option::None
+            };
+            if let Some(p) = &player {
+                p.play();
+            }
+
+            let orch = Arc::new(Mutex::new(orchestrator));
+            ComponentRegistry::new()
+                .register(Component::Render(orch.clone()))
+                .register(Component::Gui(orch.clone()))
+        }));
     }
 }

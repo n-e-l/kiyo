@@ -11,8 +11,7 @@ keywords = ["compute", "vulkan", "render", "engine", "art"]
 categories = ["rendering::engine"]
 
 [dependencies]
-cen = { path = "../cen" }
-#cen = { git = "https://github.com/n-e-l/cen.git", rev = "3a2bc52416fc6a37a38367f104e0798a16ad9969" }
+cen = { git = "https://github.com/n-e-l/cen.git", rev = "ec80165b97db6659d497c37d56eececc046b66da" }
 cpal = "0.13.4"
 glam = "0.28.0"
 log = "0.4.22"

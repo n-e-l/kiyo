@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 use cen::ash::vk;
-use cen::ash::vk::{BufferImageCopy, BufferUsageFlags, DeviceSize, Extent3D, ImageAspectFlags, ImageLayout, ImageSubresourceLayers, ImageUsageFlags, Offset3D};
+use cen::ash::vk::{BufferImageCopy, BufferUsageFlags, DeviceSize, Extent3D, ImageAspectFlags, ImageLayout, ImageSubresourceLayers, ImageUsageFlags, Offset3D, WriteDescriptorSet};
 use bytemuck::{Pod, Zeroable};
 use cen::graphics::pipeline_store::{PipelineConfig, PipelineKey};
-use cen::graphics::Renderer;
 use cen::graphics::renderer::{RenderComponent, RenderContext};
 use cen::vulkan::{Allocator, Buffer, CommandBuffer, DescriptorSetLayout, Device, Image, PipelineErr};
 use glam::{UVec3};
@@ -30,6 +29,9 @@ use crate::app::png::{write_png_image};
 pub enum DispatchConfig
 {
     Count( u32, u32, u32 ),
+    /**
+     * Dispatch *at least* as many shader invocations as there are pixels (x,y) in the image.
+     */
     FullScreen,
 }
 
@@ -48,10 +50,16 @@ pub struct Pass {
     pub output_resources: Vec<u32>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum ClearConfig {
     None,
     Color(f32,f32,f32),
+}
+
+#[derive(Clone, Copy)]
+pub enum AtomicClearConfig {
+    None,
+    Color(u32,u32,u32),
 }
 
 #[derive(Clone)]
@@ -62,6 +70,7 @@ pub struct ImageConfig {
 pub struct DrawConfig {
     pub passes: Vec<Pass>,
     pub images: Vec<ImageConfig>,
+    pub atomic_image: AtomicClearConfig,
 }
 
 pub struct ShaderPass {
@@ -74,6 +83,11 @@ pub struct ShaderPass {
 pub struct ImageResource {
     pub image: Image,
     pub clear: ClearConfig,
+}
+
+pub struct AtomicImageResource {
+    pub images: Vec<Image>,
+    pub clear: AtomicClearConfig,
 }
 
 struct ImgExport {
@@ -93,6 +107,7 @@ pub struct DrawOrchestrator {
     sink: Option<Sink>,
     pub compute_descriptor_set_layout: DescriptorSetLayout,
     pub image_resources: Vec<ImageResource>,
+    pub counter_images: AtomicImageResource,
     pub passes: Vec<ShaderPass>,
     image_export: ImgExport,
     workgroup_size: u32,
@@ -115,10 +130,17 @@ impl DrawOrchestrator {
 
         // Layout
         let layout_bindings = &[
+            // General purpose images
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(image_count)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::FRAGMENT),
+            // Atomic add images
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(3)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::FRAGMENT)
         ];
         let compute_descriptor_set_layout = DescriptorSetLayout::new_push_descriptor(
@@ -128,6 +150,17 @@ impl DrawOrchestrator {
 
         // Images
         let image_resources = Self::create_image_resources(&ctx.device, &mut ctx.allocator, &draw_config, ctx.swapchain_extent.width, ctx.swapchain_extent.height);
+        let counter_images = AtomicImageResource {
+            images:  (0..3).map(|i| {
+                Image::builder(ctx.device, &mut ctx.allocator)
+                    .width(ctx.swapchain_extent.width)
+                    .height(ctx.swapchain_extent.height)
+                    .format(vk::Format::R32_UINT)
+                    .image_usage_flags(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST)
+                    .build()
+            }).collect::<Vec<Image>>(),
+            clear: draw_config.atomic_image
+        };
 
         let push_constant_ranges = Vec::from([
             vk::PushConstantRange::default()
@@ -191,6 +224,7 @@ impl DrawOrchestrator {
             sink,
             compute_descriptor_set_layout,
             image_resources,
+            counter_images,
             passes,
             image_export: ImgExport {
                 do_export: false,
@@ -205,7 +239,7 @@ impl DrawOrchestrator {
     fn export(&mut self, ctx: &mut RenderContext, width: u32, height: u32) {
 
         info!("Exporting...");
-        let output_image = Image::new(
+        let output_image = Image::new_rgba(
             &ctx.device,
             &mut ctx.allocator,
             width,
@@ -261,6 +295,38 @@ impl DrawOrchestrator {
 
         // Clear all images with a clear config
         {
+            for i in &self.counter_images.images {
+                ctx.command_buffer.image_barrier(
+                    &i,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::AccessFlags::NONE,
+                    vk::AccessFlags::TRANSFER_WRITE
+                );
+
+                match &self.counter_images.clear {
+                    AtomicClearConfig::None => {},
+                    AtomicClearConfig::Color(r, g, b) => {
+                        ctx.command_buffer.clear_color_image_u32(
+                            &i,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            [*r, *g, *b, 0]
+                        );
+                    }
+                }
+
+                ctx.command_buffer.image_barrier(
+                    &i,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::GENERAL,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::AccessFlags::TRANSFER_WRITE,
+                    vk::AccessFlags::TRANSFER_WRITE
+                );
+            }
             for i in image_resources {
                 ctx.command_buffer.image_barrier(
                     &i.image,
@@ -306,12 +372,42 @@ impl DrawOrchestrator {
                     out_image: p.out_images.first().map(|&x| x as i32).unwrap_or(-1),
                 };
                 ctx.command_buffer.push_constants(&pipeline, vk::ShaderStageFlags::COMPUTE, 0, &bytemuck::cast_slice(std::slice::from_ref(&push_constants)));
-                ctx.command_buffer.bind_push_descriptor_images(
+
+                let image_bindings = self.image_resources.iter().map(|image| {
+                    vk::DescriptorImageInfo::default()
+                        .image_layout(vk::ImageLayout::GENERAL)
+                        .image_view(image.image.image_view())
+                        .sampler(image.image.sampler())
+                }).collect::<Vec<vk::DescriptorImageInfo>>();
+
+                let counter_image_bindings = self.counter_images.images.iter().map(|image| {
+                    vk::DescriptorImageInfo::default()
+                        .image_layout(vk::ImageLayout::GENERAL)
+                        .image_view(image.image_view())
+                        .sampler(image.sampler())
+                }).collect::<Vec<vk::DescriptorImageInfo>>();
+
+                let write_descriptor_sets = [
+                    WriteDescriptorSet::default()
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                        .image_info(&image_bindings),
+                    WriteDescriptorSet::default()
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                        .image_info(&counter_image_bindings),
+                ];
+
+                ctx.command_buffer.push_descriptor_set(
                     &pipeline,
-                    &image_resources.iter().map(|r| {
-                        &r.image
-                    }).collect::<Vec<&Image>>()
+                    0,
+                    write_descriptor_sets.as_slice()
                 );
+
+                for image in &self.image_resources { ctx.command_buffer.track(&image.image); }
+                for image in &self.counter_images.images { ctx.command_buffer.track(image); }
 
                 match p.dispatches {
                     DispatchConfig::FullScreen => {
@@ -432,7 +528,7 @@ impl DrawOrchestrator {
 
     fn create_image_resources(device: &Device, allocator: &mut Allocator, draw_config: &DrawConfig, width: u32, height: u32) -> Vec<ImageResource> {
         let image_resources = draw_config.images.iter().map(|c| {
-            let image = Image::new(
+            let image = Image::new_rgba(
                 device,
                 allocator,
                 width,
@@ -487,6 +583,14 @@ impl RenderComponent for DrawOrchestrator {
         let height = self.image_resources.first().unwrap().image.height();
         if width != ctx.swapchain_image.width() || height != ctx.swapchain_image.height() {
             self.image_resources = Self::create_image_resources(ctx.device, ctx.allocator, &self.draw_config, ctx.swapchain_image.width(), ctx.swapchain_image.height());
+            self.counter_images.images = (0..3).map(|i| {
+                Image::builder(ctx.device, &mut ctx.allocator)
+                    .width(ctx.swapchain_image.width())
+                    .height(ctx.swapchain_image.height())
+                    .format(vk::Format::R32_UINT)
+                    .image_usage_flags(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST)
+                    .build()
+            }).collect::<Vec<Image>>();
         }
 
         self.do_render(ctx, &self.image_resources, ctx.swapchain_image, ImageLayout::PRESENT_SRC_KHR, ImageLayout::PRESENT_SRC_KHR);

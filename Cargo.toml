@@ -11,7 +11,8 @@ keywords = ["compute", "vulkan", "render", "engine", "art"]
 categories = ["rendering::engine"]
 
 [dependencies]
-cen = { git = "https://github.com/n-e-l/cen.git", rev = "3a2bc52416fc6a37a38367f104e0798a16ad9969" }
+cen = { path = "../cen" }
+#cen = { git = "https://github.com/n-e-l/cen.git", rev = "3a2bc52416fc6a37a38367f104e0798a16ad9969" }
 cpal = "0.13.4"
 glam = "0.28.0"
 log = "0.4.22"
@@ -35,3 +36,6 @@ name = "clear"
 
 [[example]]
 name = "feedback"
+
+[[example]]
+name = "atomic-add"

@@ -1,6 +1,6 @@
 use kiyo::app::app::{App, AppConfig};
 use kiyo::app::audio_orch::AudioConfig;
-use kiyo::app::draw_orch::{ClearConfig, DrawConfig, ImageConfig};
+use kiyo::app::draw_orch::{AtomicClearConfig, ClearConfig, DrawConfig, ImageConfig};
 
 fn main() {
 
@@ -19,6 +19,7 @@ fn main() {
                 clear: ClearConfig::Color(1.0, 1.0, 0.0)
             },
         ]),
+        atomic_image: AtomicClearConfig::None,
         passes: Vec::from([
         ])
     };

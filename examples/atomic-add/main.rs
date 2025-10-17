@@ -1,6 +1,6 @@
 use kiyo::app::app::{App, AppConfig};
-use kiyo::app::audio_orch::AudioConfig;
 use kiyo::app::draw_orch::{AtomicClearConfig, ClearConfig, DispatchConfig, DrawConfig, ImageConfig, Pass};
+use kiyo::app::audio_orch::{AudioConfig};
 
 fn main() {
 
@@ -17,24 +17,21 @@ fn main() {
             ImageConfig {
                 clear: ClearConfig::Color(0.0, 0.0, 0.0)
             },
-            ImageConfig {
-                clear: ClearConfig::Color(0.0, 0.0, 0.0)
-            },
         ]),
-        atomic_image: AtomicClearConfig::None,
+        atomic_image: AtomicClearConfig::Color(0, 0, 0),
         passes: Vec::from([
             Pass {
-                shader: "examples/blur-pass/shaders/screen_shader.comp".to_string(),
-                dispatches: DispatchConfig::FullScreen,
+                shader: "examples/atomic-add/shaders/colors.comp".to_string(),
+                dispatches: DispatchConfig::Count(1, 1, 1),
                 input_resources: Vec::from([]),
                 output_resources: Vec::from([ 0 ]),
             },
             Pass {
-                shader: "examples/blur-pass/shaders/blur.comp".to_string(),
+                shader: "examples/atomic-add/shaders/readback.comp".to_string(),
                 dispatches: DispatchConfig::FullScreen,
-                input_resources: Vec::from([ 0 ]),
-                output_resources: Vec::from([ 1 ]),
-            }
+                input_resources: Vec::from([]),
+                output_resources: Vec::from([ 0 ]),
+            },
         ])
     };
 

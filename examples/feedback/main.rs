@@ -1,7 +1,7 @@
 use kiyo::app::App;
 use kiyo::app::app::AppConfig;
 use kiyo::app::audio_orch::AudioConfig;
-use kiyo::app::draw_orch::{ClearConfig, DispatchConfig, DrawConfig, ImageConfig, Pass};
+use kiyo::app::draw_orch::{AtomicClearConfig, ClearConfig, DispatchConfig, DrawConfig, ImageConfig, Pass};
 
 fn main() {
 
@@ -22,6 +22,7 @@ fn main() {
                 clear: ClearConfig::None
             },
         ]),
+        atomic_image: AtomicClearConfig::None,
         passes: Vec::from([
             Pass {
                 shader: "examples/feedback/shaders/setup.comp".to_string(),

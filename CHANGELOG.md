@@ -6,10 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<<<<<<< Updated upstream
 ## [0.0.7](https://github.com/n-e-l/kiyo/compare/v0.0.6...v0.0.7) - 2025-10-04
 
 ### Other
 
+=======
+## [0.0.7](https://github.com/n-e-l/kiyo/compare/v0.0.6...v0.0.7) - 2025-10-17
+
+### Other
+
+- Fix cen version
+- Fix cen version
+- Clean warnings and remove deprecated imports
+- Add atomic image config
+>>>>>>> Stashed changes
 - Update cen
 - Update cen
 - Update my name

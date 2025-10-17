@@ -5,7 +5,7 @@ use cen::ash::vk::{BufferImageCopy, BufferUsageFlags, DeviceSize, Extent3D, Imag
 use bytemuck::{Pod, Zeroable};
 use cen::graphics::pipeline_store::{PipelineConfig, PipelineKey};
 use cen::graphics::renderer::{RenderComponent, RenderContext};
-use cen::vulkan::{Allocator, Buffer, CommandBuffer, DescriptorSetLayout, Device, Image, PipelineErr};
+use cen::vulkan::{Allocator, Buffer, DescriptorSetLayout, Device, Image, PipelineErr};
 use glam::{UVec3};
 use log::{error, info};
 use crate::app::audio_orch::{AudioConfig};
@@ -19,8 +19,8 @@ use std::process::exit;
 use std::thread;
 use cen::app::engine::InitContext;
 use cen::app::gui::{GuiComponent, GuiSystem};
-use cen::egui::{menu, Context, TopBottomPanel};
-use cen::egui::epaint::ColorMode::UV;
+use cen::egui;
+use cen::egui::{Context, TopBottomPanel};
 use cen::gpu_allocator::MemoryLocation;
 use crate::app::png::{write_png_image};
 
@@ -102,7 +102,9 @@ struct ImgExport {
  */
 pub struct DrawOrchestrator {
     draw_config: DrawConfig,
+    #[allow(dead_code)]
     audio_config: AudioConfig,
+    #[allow(dead_code)]
     audio_stream: Option<OutputStream>,
     sink: Option<Sink>,
     pub compute_descriptor_set_layout: DescriptorSetLayout,
@@ -151,7 +153,7 @@ impl DrawOrchestrator {
         // Images
         let image_resources = Self::create_image_resources(&ctx.device, &mut ctx.allocator, &draw_config, ctx.swapchain_extent.width, ctx.swapchain_extent.height);
         let counter_images = AtomicImageResource {
-            images:  (0..3).map(|i| {
+            images:  (0..3).map(|_| {
                 Image::builder(ctx.device, &mut ctx.allocator)
                     .width(ctx.swapchain_extent.width)
                     .height(ctx.swapchain_extent.height)
@@ -246,7 +248,7 @@ impl DrawOrchestrator {
             height,
             ImageUsageFlags::STORAGE | ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::TRANSFER_SRC
         );
-        let mut buffer = Buffer::new(
+        let buffer = Buffer::new(
             &ctx.device,
             &mut ctx.allocator,
             MemoryLocation::GpuToCpu,
@@ -549,7 +551,7 @@ impl DrawOrchestrator {
 impl GuiComponent for DrawOrchestrator {
     fn gui(&mut self, _: &GuiSystem, context: &Context) {
         TopBottomPanel::top("top").show(context, |ui| {
-            menu::bar(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("Export..", |ui| {
                     // ui.label("Width");
                     // ui.add(egui::TextEdit::singleline(&mut self.image_export.width_text));
@@ -583,7 +585,7 @@ impl RenderComponent for DrawOrchestrator {
         let height = self.image_resources.first().unwrap().image.height();
         if width != ctx.swapchain_image.width() || height != ctx.swapchain_image.height() {
             self.image_resources = Self::create_image_resources(ctx.device, ctx.allocator, &self.draw_config, ctx.swapchain_image.width(), ctx.swapchain_image.height());
-            self.counter_images.images = (0..3).map(|i| {
+            self.counter_images.images = (0..3).map(|_| {
                 Image::builder(ctx.device, &mut ctx.allocator)
                     .width(ctx.swapchain_image.width())
                     .height(ctx.swapchain_image.height())

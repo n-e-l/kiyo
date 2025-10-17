@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7](https://github.com/n-e-l/kiyo/compare/v0.0.6...v0.0.7) - 2025-10-04
+
+### Other
+
+- Update cen
+- Update cen
+- Update my name
+- Update cen
+- Remove unneeded lifetime management
+- Fix export
+- Add flake
+- Update README.md
+- Fix dispatch count not following workgroup_size
+
 ## [0.0.6](https://github.com/angelocarly/kiyo/compare/v0.0.5...v0.0.6) - 2025-03-10
 
 ### Other

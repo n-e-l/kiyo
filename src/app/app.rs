@@ -60,6 +60,7 @@ impl App {
             .height(app_config.height)
             .vsync(app_config.vsync)
             .fullscreen(app_config.fullscreen)
+            .resizable(true)
             .log_fps(app_config.log_fps);
 
         cen::app::Cen::run(cen_conf, Box::new(move |ctx| {

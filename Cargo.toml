@@ -11,13 +11,15 @@ keywords = ["compute", "vulkan", "render", "engine", "art"]
 categories = ["rendering::engine"]
 
 [dependencies]
-cen = "0.0.9"
+cen = { path = "../cen" }
+#cen = "0.0.9"
 cpal = "0.13.4"
 glam = "0.28.0"
 log = "0.4.22"
 bytemuck = { version = "1.17.0", features = ["derive"] }
 rodio = "0.20.1"
 png = "0.17.16"
+egui_dock = "0.17.0"
 
 [dev-dependencies]
 

@@ -14,6 +14,8 @@ fn main() {
     };
 
     let config = DrawConfig {
+        width: 1920,
+        height: 1080,
         images: Vec::from([
             ImageConfig {
                 clear: ClearConfig::Color(0.0, 0.0, 0.0)

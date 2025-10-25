@@ -14,12 +14,15 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
+        rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
+          extensions = [ "rust-src" "clippy" "rustfmt" ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             # Rust toolchain
-            rust-bin.stable.latest.default
+            rustToolchain
             
             # Development tools
             rust-analyzer
@@ -50,7 +53,7 @@
             alsa-tools
           ];
 
-	  # Set library paths
+          # Set library paths
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             pkgs.wayland
             pkgs.libxkbcommon
@@ -67,7 +70,8 @@
           ALSA_PCM_DEVICE = "0";
 
           # Environment variables
-          RUST_SRC_PATH = pkgs.rustPlatform.rustLibSrc;
+          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+
         };
       });
 }

@@ -14,6 +14,8 @@ fn main() {
 
     // Display a single image cleared to yellow
     let config = DrawConfig {
+        width: 1920,
+        height: 1080,
         images: Vec::from([
             ImageConfig {
                 clear: ClearConfig::Color(1.0, 1.0, 0.0)

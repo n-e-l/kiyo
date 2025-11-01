@@ -23,7 +23,7 @@ use cen::egui;
 use cen::egui::{emath, Context, ImageSource, Pos2, Rect, Scene, TextureId, TopBottomPanel, Widget};
 use cen::egui::load::SizedTexture;
 use cen::gpu_allocator::MemoryLocation;
-use egui_dock::{DockArea, DockState, NodeIndex, Style};
+use egui_dock::{DockArea, DockState, NodeIndex, Style, TabBarStyle};
 use egui_dock::tab_viewer::OnCloseResponse;
 use crate::app::png::{write_png_image};
 
@@ -239,6 +239,10 @@ impl DrawOrchestrator {
         let [a, b] =
             dock_state.main_surface_mut()
                 .split_left(NodeIndex::root(), 0.1, vec!["tools".to_string()]);
+
+        let [_, _] =
+            dock_state.main_surface_mut()
+                .split_below(a, 0.95, vec!["playback".to_string()]);
 
         let render_controls = RenderControls {
             running: false,
@@ -560,6 +564,10 @@ impl<'a> egui_dock::TabViewer for TabViewer<'a> {
                 self.controls.running = false;
             }
             self.controls.step =  ui.button("step").clicked();
+        } else if tab == "playback" {
+            if ui.button("play").clicked() {
+                self.controls.running = true;
+            }
         }
     }
 
@@ -596,9 +604,14 @@ impl GuiComponent for DrawOrchestrator {
             scene_rect: &mut self.scene_rect,
             texture_id: &mut self.texture_id,
         };
+
         egui::CentralPanel::default().show(context, |ui| {
+            let mut style = Style::from_egui(ui.style().as_ref());
+            style.tab_bar.height = 0.0;
+            style.tab_bar.show_scroll_bar_on_overflow = false;
+
             DockArea::new(&mut self.dock_state)
-                .style(Style::from_egui(ui.style().as_ref()))
+                .style(style)
                 .show_inside(ui, &mut TabViewer {
                     panel: panel_data,
                     controls: &mut self.render_controls

@@ -20,10 +20,11 @@ use std::thread;
 use cen::app::engine::InitContext;
 use cen::app::gui::{GuiComponent, GuiHandler};
 use cen::egui;
-use cen::egui::{emath, Context, ImageSource, Pos2, Scene, TextureId, TopBottomPanel, Widget};
+use cen::egui::{emath, Context, ImageSource, Pos2, Rect, Scene, TextureId, TopBottomPanel, Widget};
 use cen::egui::load::SizedTexture;
 use cen::gpu_allocator::MemoryLocation;
-use egui_dock::{DockState};
+use egui_dock::{DockArea, DockState, NodeIndex, Style};
+use egui_dock::tab_viewer::OnCloseResponse;
 use crate::app::png::{write_png_image};
 
 type Tab = String;
@@ -119,7 +120,10 @@ pub struct DrawOrchestrator {
     workgroup_size: u32,
     start_time: std::time::Instant,
     texture_id: Option<TextureId>,
-    scene_rect: emath::Rect
+    scene_rect: emath::Rect,
+    dock_state: DockState<String>,
+    render_controls: RenderControls,
+    first_frame: bool,
 }
 
 impl DrawOrchestrator {
@@ -230,6 +234,17 @@ impl DrawOrchestrator {
 
         let scene_rect = emath::Rect { min: Pos2::new(0., 0.), max: Pos2::new(draw_config.width as f32, draw_config.height as f32) };
 
+        let mut dock_state = DockState::new(vec!["content".to_owned()]);
+
+        let [a, b] =
+            dock_state.main_surface_mut()
+                .split_left(NodeIndex::root(), 0.1, vec!["tools".to_string()]);
+
+        let render_controls = RenderControls {
+            running: false,
+            step: false
+        };
+
         Self {
             workgroup_size: 32,
             draw_config,
@@ -246,7 +261,10 @@ impl DrawOrchestrator {
             },
             start_time: std::time::Instant::now(),
             texture_id: None,
-            scene_rect
+            scene_rect,
+            dock_state,
+            render_controls,
+            first_frame: true
         }
     }
 
@@ -497,6 +515,60 @@ impl DrawOrchestrator {
     }
 }
 
+struct ViewPanel<'a> {
+    image: &'a Image,
+    scene_rect: &'a mut Rect,
+    texture_id: &'a mut Option<TextureId>,
+}
+
+struct RenderControls {
+    running: bool,
+    step: bool
+}
+
+struct TabViewer<'a> {
+    panel: ViewPanel<'a>,
+    controls: &'a mut RenderControls,
+}
+
+impl<'a> egui_dock::TabViewer for TabViewer<'a> {
+    type Tab = String;
+
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        (&*tab).into()
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        if tab == "content" {
+            let im = &self.panel.image;
+            let size = cen::egui::Vec2 { x: im.width() as f32, y: im.height() as f32 };
+            if let Some(id) = self.panel.texture_id {
+                Scene::new()
+                    .zoom_range(0.2..=50.0)
+                    .show(ui, &mut self.panel.scene_rect, |ui| {
+                    egui::Image::new(ImageSource::Texture(SizedTexture {
+                        id: *id,
+                        size
+                    })).ui(ui);
+                });
+            }
+        } else if tab == "tools" {
+            if ui.button("play").clicked() {
+                self.controls.running = true;
+            }
+            if ui.button("pause").clicked() {
+                self.controls.running = false;
+            }
+            self.controls.step =  ui.button("step").clicked();
+        }
+    }
+
+    fn on_close(&mut self, _tab: &mut Self::Tab) -> OnCloseResponse {
+        println!("Closed tab: {_tab}");
+        OnCloseResponse::Close
+    }
+}
+
 impl GuiComponent for DrawOrchestrator {
     fn gui(&mut self, gui: &mut GuiHandler, context: &Context) {
 
@@ -515,32 +587,33 @@ impl GuiComponent for DrawOrchestrator {
             });
         });
 
+        let image = &self.image_resources.last().unwrap().image;
+        if self.texture_id.is_none() {
+            self.texture_id = Some(gui.create_texture(image));
+        }
+        let panel_data = ViewPanel {
+            image,
+            scene_rect: &mut self.scene_rect,
+            texture_id: &mut self.texture_id,
+        };
         egui::CentralPanel::default().show(context, |ui| {
-            let im = &self.image_resources.last().unwrap().image;
-            let size = cen::egui::Vec2 { x: im.width() as f32, y: im.height() as f32 };
-            if self.texture_id == None {
-                self.texture_id = Some( gui.create_texture( im ) );
-            }
-            if let Some(id) = self.texture_id {
-                Scene::new()
-                    .zoom_range(0.2..=50.0)
-                    .show(ui, &mut self.scene_rect, |ui| {
-                    egui::Image::new(ImageSource::Texture(SizedTexture {
-                        id,
-                        size
-                    })).ui(ui);
+            DockArea::new(&mut self.dock_state)
+                .style(Style::from_egui(ui.style().as_ref()))
+                .show_inside(ui, &mut TabViewer {
+                    panel: panel_data,
+                    controls: &mut self.render_controls
                 });
-            }
-            // DockArea::new(&mut self.dock_state)
-            //     .style(Style::from_egui(ui.style().as_ref()))
-            //     .show_inside(ui, &mut MyTabViewer);
         });
     }
 }
 
 impl RenderComponent for DrawOrchestrator {
     fn render(&mut self, ctx: &mut RenderContext) {
-        self.do_render(ctx, &self.image_resources);
+
+        if self.first_frame || self.render_controls.step || self.render_controls.running {
+            self.do_render(ctx, &self.image_resources);
+            self.first_frame = false;
+        }
 
         if self.image_export.do_export {
             self.export(ctx, self.draw_config.width, self.draw_config.height);

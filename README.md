@@ -1,5 +1,5 @@
 # Kiyo
-![build](https://github.com/angelocarly/akai/actions/workflows/rust.yml/badge.svg)
+![build](https://github.com/n-e-l/kiyo/actions/workflows/rust.yml/badge.svg)
 [![crate](https://img.shields.io/crates/v/kiyo)](https://crates.io/crates/kiyo/)  
 
 ## What is Kiyo?
